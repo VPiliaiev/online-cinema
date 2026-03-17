@@ -1,8 +1,10 @@
 from datetime import date
+from typing import Annotated, Optional
 
 from fastapi import UploadFile, Form, File, HTTPException
-from pydantic import BaseModel, field_validator, HttpUrl
+from pydantic import BaseModel, field_validator, HttpUrl, StringConstraints
 
+from database.models.accounts import GenderEnum
 from validation import (
     validate_name,
     validate_image,
@@ -11,16 +13,16 @@ from validation import (
 )
 
 
-class ProfileCreateSchema(BaseModel):
+class ProfileRequestSchema(BaseModel):
     first_name: str
     last_name: str
-    gender: str
+    gender: GenderEnum
     date_of_birth: date
     info: str
     avatar: UploadFile
 
     @classmethod
-    def from_form(
+    def as_form(
             cls,
             first_name: str = Form(...),
             last_name: str = Form(...),
@@ -28,7 +30,7 @@ class ProfileCreateSchema(BaseModel):
             date_of_birth: date = Form(...),
             info: str = Form(...),
             avatar: UploadFile = File(...)
-    ) -> "ProfileCreateSchema":
+    ) -> "ProfileRequestSchema":
         return cls(
             first_name=first_name,
             last_name=last_name,
@@ -40,39 +42,17 @@ class ProfileCreateSchema(BaseModel):
 
     @field_validator("first_name", "last_name")
     @classmethod
-    def validate_name_field(cls, name: str) -> str:
+    def check_names(cls, v: str, info) -> str:
         try:
-            validate_name(name)
-            return name.lower()
+            validate_name(v)
+            return v.lower()
         except ValueError as e:
             raise HTTPException(
                 status_code=422,
-                detail=[{
-                    "type": "value_error",
-                    "loc": ["first_name" if "first_name" in name else "last_name"],
-                    "msg": str(e),
-                    "input": name
-                }]
+                detail=[{"type": "value_error", "loc": ["body", info.field_name], "msg": str(e), "input": v}]
             )
 
-    @field_validator("avatar")
-    @classmethod
-    def validate_avatar(cls, avatar: UploadFile) -> UploadFile:
-        try:
-            validate_image(avatar)
-            return avatar
-        except ValueError as e:
-            raise HTTPException(
-                status_code=422,
-                detail=[{
-                    "type": "value_error",
-                    "loc": ["avatar"],
-                    "msg": str(e),
-                    "input": avatar.filename
-                }]
-            )
-
-    @field_validator("gender")
+    @field_validator("gender", mode='before')
     @classmethod
     def validate_gender(cls, gender: str) -> str:
         try:
@@ -88,21 +68,34 @@ class ProfileCreateSchema(BaseModel):
                     "input": gender
                 }]
             )
-
     @field_validator("date_of_birth")
     @classmethod
-    def validate_date_of_birth(cls, date_of_birth: date) -> date:
+    def check_birth_date(cls, v: date) -> date:
         try:
-            validate_birth_date(date_of_birth)
-            return date_of_birth
+            validate_birth_date(v)
+            return v
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422,
+                detail=[{"type": "value_error", "loc": ["body", "date_of_birth"], "msg": str(e), "input": str(v)}]
+            )
+
+    @field_validator("avatar", mode='after')
+    @classmethod
+    def check_avatar(cls, v: UploadFile) -> UploadFile:
+        try:
+            v.file.seek(0)
+            validate_image(v)
+            v.file.seek(0)
+            return v
         except ValueError as e:
             raise HTTPException(
                 status_code=422,
                 detail=[{
                     "type": "value_error",
-                    "loc": ["date_of_birth"],
+                    "loc": ["avatar"],
                     "msg": str(e),
-                    "input": str(date_of_birth)
+                    "input": v.filename
                 }]
             )
 
@@ -122,13 +115,15 @@ class ProfileCreateSchema(BaseModel):
             )
         return cleaned_info
 
-
 class ProfileResponseSchema(BaseModel):
     id: int
     user_id: int
     first_name: str
     last_name: str
-    gender: str
+    gender: GenderEnum
     date_of_birth: date
-    info: str
-    avatar: HttpUrl
+    info: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1)
+    ]
+    avatar: Optional[HttpUrl]
