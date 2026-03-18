@@ -613,3 +613,26 @@ async def refresh_access_token(
     new_access_token = jwt_manager.create_access_token({"user_id": user_id})
 
     return TokenRefreshResponseSchema(access_token=new_access_token)
+
+
+@router.post(
+    "/logout/",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="User Logout",
+    description="Logout the user by deleting their refresh token from the database."
+)
+async def logout_user(
+        token_data: TokenRefreshRequestSchema,
+        db: AsyncSession = Depends(get_db),
+):
+    """
+    Endpoint for user logout.
+
+    Deletes the provided refresh token from the database, ending the session.
+    """
+    stmt = delete(RefreshTokenModel).where(RefreshTokenModel.token == token_data.refresh_token)
+
+    result = await db.execute(stmt)
+    await db.commit()
+
+    return None

@@ -992,3 +992,84 @@ async def test_refresh_access_token_user_not_found(client, db_session, jwt_manag
 
     assert refresh_response.status_code == 404, "Expected status code 404 for non-existent user."
     assert refresh_response.json()["detail"] == "User not found.", "Unexpected error message."
+
+
+@pytest.mark.asyncio
+async def test_logout_user_success(client, db_session, seed_user_groups):
+    """
+    Test successful logout.
+
+    Validates that the refresh token is deleted from the database after logout.
+    """
+    email = "logout_test@example.com"
+    password = "StrongPassword123!"
+
+    stmt_group = select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+    result_group = await db_session.execute(stmt_group)
+    user_group = result_group.scalars().first()
+
+    user = UserModel.create(email=email, raw_password=password, group_id=user_group.id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_payload = {"email": email, "password": password}
+    login_response = await client.post("/api/v1/accounts/login/", json=login_payload)
+    refresh_token = login_response.json()["refresh_token"]
+
+    stmt_check = select(RefreshTokenModel).where(RefreshTokenModel.token == refresh_token)
+    result_check = await db_session.execute(stmt_check)
+    assert result_check.scalars().first() is not None, "Token should be in DB before logout."
+
+    logout_payload = {"refresh_token": refresh_token}
+    response = await client.post("/api/v1/accounts/logout/", json=logout_payload)
+
+    assert response.status_code == 204, "Expected 204 status code for successful logout."
+
+    result_after = await db_session.execute(stmt_check)
+    assert result_after.scalars().first() is None, "Refresh token should be deleted from DB after logout."
+
+
+@pytest.mark.asyncio
+async def test_logout_non_existent_token(client, db_session):
+    """
+    Test logout with a token that doesn't exist in the database.
+
+    Should still return 204 to avoid leaking information about token existence.
+    """
+    logout_payload = {"refresh_token": "some_fake_non_existent_token_123"}
+    response = await client.post("/api/v1/accounts/logout/", json=logout_payload)
+
+    assert response.status_code == 204, "Logout should return 204 even if token is not found."
+
+
+@pytest.mark.asyncio
+async def test_logout_invalidates_refresh_token(client, db_session, seed_user_groups):
+    """
+    1. Login to get a valid refresh token.
+    2. Logout to delete that token.
+    3. Attempt to use the deleted token at /refresh/ endpoint.
+    4. Expect 401 Unauthorized.
+    """
+    email = "security_test@example.com"
+    password = "StrongPassword123!"
+
+    res_group = await db_session.execute(
+        select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+    )
+    user_group = res_group.scalars().first()
+
+    user = UserModel.create(email=email, raw_password=password, group_id=user_group.id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    refresh_token = login_res.json()["refresh_token"]
+
+    await client.post("/api/v1/accounts/logout/", json={"refresh_token": refresh_token})
+
+    refresh_res = await client.post("/api/v1/accounts/refresh/", json={"refresh_token": refresh_token})
+
+    assert refresh_res.status_code == 401, "Should not be able to refresh token after logout."
+    assert refresh_res.json()["detail"] == "Refresh token not found.", "Unexpected error message."
