@@ -7,8 +7,9 @@ from sqlalchemy.orm import joinedload
 
 from config import get_s3_storage_client, get_jwt_auth_manager
 from database import get_db, UserModel, UserProfileModel
+from exceptions import BaseSecurityError
 
-from schemas.profiles import ProfileResponseSchema, ProfileRequestSchema
+from schemas.profiles import ProfileResponseSchema, ProfileRequestSchema, UserMeResponseSchema
 from security.http import get_token
 from security.interfaces import JWTAuthManagerInterface
 from storages import S3StorageInterface
@@ -107,4 +108,73 @@ async def create_profile(
         date_of_birth=new_profile.date_of_birth,
         info=new_profile.info,
         avatar=avatar_url
+    )
+
+
+@router.get(
+    "/me/",
+    response_model=UserMeResponseSchema,
+    summary="Get Current User Profile",
+    description=(
+            "Retrieves the detailed profile of the currently authenticated user. "
+            "Includes basic account information, the assigned user group, and profile details."
+    ),
+    status_code=status.HTTP_200_OK,
+    responses={
+        401: {"description": "Unauthorized - Invalid or expired token."},
+        404: {"description": "Not Found - User not found."},
+    },
+)
+async def get_my_profile(
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> UserMeResponseSchema:
+    """
+    Endpoint to fetch the current user's data.
+
+    Args:
+        token (str): The JWT access token from the Authorization header.
+        jwt_manager (JWTAuthManagerInterface): Manager for token operations.
+        db (AsyncSession): The database session.
+
+    Returns:
+        UserMeResponseSchema: Aggregated user and profile data.
+
+    Raises:
+        HTTPException: 401 if the token is invalid or 404 if the user doesn't exist.
+    """
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        user_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token."
+        )
+
+    stmt = (
+        select(UserModel)
+        .options(
+            joinedload(UserModel.profile),
+            joinedload(UserModel.group)
+        )
+        .where(UserModel.id == user_id)
+    )
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+
+    return UserMeResponseSchema(
+        id=user.id,
+        email=user.email,
+        is_active=user.is_active,
+        group_name=user.group.name.value,
+        created_at=user.created_at,
+        profile=ProfileResponseSchema.model_validate(user.profile) if user.profile else None
     )
