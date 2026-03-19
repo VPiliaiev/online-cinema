@@ -1,8 +1,8 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Optional
 
 from fastapi import UploadFile, Form, File, HTTPException
-from pydantic import BaseModel, field_validator, HttpUrl, StringConstraints
+from pydantic import BaseModel, field_validator, HttpUrl, StringConstraints, ConfigDict, EmailStr
 
 from database.models.accounts import GenderEnum
 from validation import (
@@ -68,6 +68,7 @@ class ProfileRequestSchema(BaseModel):
                     "input": gender
                 }]
             )
+
     @field_validator("date_of_birth")
     @classmethod
     def check_birth_date(cls, v: date) -> date:
@@ -115,6 +116,7 @@ class ProfileRequestSchema(BaseModel):
             )
         return cleaned_info
 
+
 class ProfileResponseSchema(BaseModel):
     id: int
     user_id: int
@@ -122,8 +124,18 @@ class ProfileResponseSchema(BaseModel):
     last_name: str
     gender: GenderEnum
     date_of_birth: date
-    info: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1)
-    ]
-    avatar: Optional[HttpUrl]
+    info: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    avatar: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserMeResponseSchema(BaseModel):
+    id: int
+    email: EmailStr
+    is_active: bool
+    group_name: str
+    created_at: datetime
+    profile: Optional[ProfileResponseSchema] = None
+
+    model_config = ConfigDict(from_attributes=True)

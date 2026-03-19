@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from unittest.mock import patch
 
 import pytest
@@ -6,7 +6,8 @@ from io import BytesIO
 from PIL import Image
 from sqlalchemy import select, func
 
-from database import UserModel, UserProfileModel
+from database import UserModel, UserProfileModel, UserGroupModel, UserGroupEnum
+from database.models.accounts import GenderEnum
 from exceptions import S3FileUploadError
 
 
@@ -633,3 +634,53 @@ async def test_profile_creation_empty_info(client, jwt_manager, info_value):
     assert response.status_code == 422, f"Expected 422, got {response.status_code}"
     assert "Info field cannot be empty or contain only spaces." in str(response.json()), \
         f"Unexpected error message: {response.json()}"
+
+
+@pytest.mark.asyncio
+async def test_get_my_profile_success(client, db_session, seed_user_groups):
+    """
+    Test successful retrieval of the current user's profile.
+    """
+    email = "me_profile_test@example.com"
+    password = "StrongPassword123!"
+
+    res_group = await db_session.execute(
+        select(UserGroupModel).filter_by(name=UserGroupEnum.USER)
+    )
+    group = res_group.scalars().first()
+
+    user = UserModel.create(email=email, raw_password=password, group_id=group.id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.flush()
+
+    profile = UserProfileModel(
+        user_id=user.id,
+        first_name="Bob",
+        last_name="Doodle",
+        gender=GenderEnum.MAN,
+        date_of_birth=date(1995, 5, 20),
+        info="Developer"
+    )
+    db_session.add(profile)
+    await db_session.commit()
+
+    login_res = await client.post(
+        "/api/v1/accounts/login/",
+        json={"email": email, "password": password}
+    )
+    access_token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    response = await client.get("/api/v1/accounts/me/", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["email"] == email
+    assert data["group_name"] == "user"
+    assert data["is_active"] is True
+    assert data["profile"]["first_name"] == "Bob"
+    assert data["profile"]["last_name"] == "Doodle"
+    assert data["profile"]["info"] == "Developer"
+    assert "created_at" in data
