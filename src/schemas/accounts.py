@@ -1,6 +1,6 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
 
-from database import accounts_validators
+from database import accounts_validators, UserGroupEnum
 
 
 class PasswordResetRequestSchema(BaseModel):
@@ -76,3 +76,9 @@ class PasswordChangeRequestSchema(BaseModel):
     @classmethod
     def validate_new_password(cls, value: str) -> str:
         return accounts_validators.validate_password_strength(value)
+
+
+class UserGroupChangeRequestSchema(BaseModel):
+    new_group: UserGroupEnum
+
+    model_config = ConfigDict(from_attributes=True)

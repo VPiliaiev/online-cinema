@@ -1196,3 +1196,38 @@ async def test_change_password_wrong_old(client, db_session, seed_user_groups):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid old password."
+
+
+@pytest.mark.asyncio
+async def test_change_group_admin_success(client, db_session, seed_user_groups):
+    res_admin_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.ADMIN))
+    admin_group = res_admin_group.scalars().first()
+    admin = UserModel.create(email="admin@test.com", raw_password="AdminPass123!", group_id=admin_group.id)
+    admin.is_active = True
+    db_session.add(admin)
+
+    res_user_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user_group = res_user_group.scalars().first()
+    target_user = UserModel.create(email="target@test.com", raw_password="UserPass123!", group_id=user_group.id)
+    target_user.is_active = True
+    db_session.add(target_user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/",
+                                  json={"email": "admin@test.com", "password": "AdminPass123!"})
+    token = login_res.json()["access_token"]
+
+    payload = {"new_group": "moderator"}
+    response = await client.patch(
+        f"/api/v1/accounts/{target_user.id}/group/",
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "User group updated to moderator"
+
+    await db_session.refresh(target_user)
+    res_group_check = await db_session.execute(select(UserGroupModel).where(UserGroupModel.id == target_user.group_id))
+    updated_group = res_group_check.scalars().first()
+    assert updated_group.name == UserGroupEnum.MODERATOR

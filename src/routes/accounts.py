@@ -31,7 +31,7 @@ from schemas import (
     TokenRefreshRequestSchema,
     TokenRefreshResponseSchema
 )
-from schemas.accounts import PasswordChangeRequestSchema
+from schemas.accounts import PasswordChangeRequestSchema, UserGroupChangeRequestSchema
 from schemas.profiles import UserMeResponseSchema, ProfileResponseSchema
 from security.http import get_token
 from security.interfaces import JWTAuthManagerInterface
@@ -738,8 +738,8 @@ async def change_password(
     response_model=UserMeResponseSchema,
     summary="Get Current User Profile",
     description=(
-        "Retrieves the detailed profile of the currently authenticated user. "
-        "Includes basic account information, the assigned user group, and profile details."
+            "Retrieves the detailed profile of the currently authenticated user. "
+            "Includes basic account information, the assigned user group, and profile details."
     ),
     status_code=status.HTTP_200_OK,
     responses={
@@ -748,9 +748,9 @@ async def change_password(
     },
 )
 async def get_my_profile(
-    token: str = Depends(get_token),
-    jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
-    db: AsyncSession = Depends(get_db),
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
 ) -> UserMeResponseSchema:
     """
     Endpoint to fetch the current user's data.
@@ -800,3 +800,76 @@ async def get_my_profile(
         created_at=user.created_at,
         profile=ProfileResponseSchema.model_validate(user.profile) if user.profile else None
     )
+
+
+@router.patch(
+    "/{user_id}/group/",
+    response_model=MessageResponseSchema,
+    summary="Change User Group (Admin Only)",
+    description="Allows an administrator to change the group of a specific user.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "Group updated successfully."},
+        403: {"description": "Forbidden - Only admins can perform this action."},
+        404: {"description": "Not Found - User or group not found."},
+    },
+)
+async def change_user_group(
+        user_id: int,
+        data: UserGroupChangeRequestSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> MessageResponseSchema:
+    """
+    Endpoint for admins to promote or demote users.
+    """
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        admin_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+
+    admin_stmt = (
+        select(UserModel)
+        .options(joinedload(UserModel.group))
+        .where(UserModel.id == admin_id)
+    )
+    admin_res = await db.execute(admin_stmt)
+    admin = admin_res.scalars().first()
+
+    if not admin or admin.group.name != UserGroupEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can perform this action."
+        )
+
+    user_stmt = select(UserModel).where(UserModel.id == user_id)
+    user_res = await db.execute(user_stmt)
+    target_user = user_res.scalars().first()
+
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User to update not found."
+        )
+
+    group_stmt = select(UserGroupModel).where(UserGroupModel.name == data.new_group)
+    group_res = await db.execute(group_stmt)
+    new_group_obj = group_res.scalars().first()
+
+    if not new_group_obj:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target group not found in database."
+        )
+
+    target_user.group_id = new_group_obj.id
+
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Database error.")
+
+    return MessageResponseSchema(message=f"User group updated to {data.new_group.value}")
