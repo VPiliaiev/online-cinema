@@ -31,6 +31,8 @@ from schemas import (
     TokenRefreshRequestSchema,
     TokenRefreshResponseSchema
 )
+from schemas.accounts import PasswordChangeRequestSchema
+from security.http import get_token
 from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
@@ -672,3 +674,59 @@ async def resend_activation_token(
     )
 
     return MessageResponseSchema(message="A new activation link has been sent to your email.")
+
+
+@router.patch(
+    "/password-change/",
+    response_model=MessageResponseSchema,
+    status_code=status.HTTP_200_OK,
+)
+async def change_password(
+        data: PasswordChangeRequestSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> MessageResponseSchema:
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        user_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired."
+        )
+
+    stmt = select(UserModel).where(UserModel.id == user_id)
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or not active."
+        )
+
+    if not user.verify_password(data.old_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid old password."
+        )
+
+    if data.old_password == data.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password cannot be the same as the old one."
+        )
+
+    user.password = data.new_password
+
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while updating the password."
+        )
+
+    return MessageResponseSchema(message="Password changed successfully.")

@@ -1135,3 +1135,64 @@ async def test_resend_activation_non_existent_user(client):
     response = await client.post("/api/v1/accounts/activate/resend/", json={"email": "none@example.com"})
     assert response.status_code == 200
     assert "sent" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_change_password_success(client, db_session, seed_user_groups):
+    """
+    Test successful password change.
+    1. Create active user.
+    2. Login to get access_token.
+    3. Call /password-change/ with valid old password.
+    """
+    email = "pass_change@example.com"
+    old_pw = "OldStrongPass123!"
+    new_pw = "NewSuperPass888!"
+
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=old_pw, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": old_pw})
+    access_token = login_res.json()["access_token"]
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    payload = {"old_password": old_pw, "new_password": new_pw}
+    response = await client.patch("/api/v1/accounts/password-change/", json=payload, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Password changed successfully."
+
+    login_check = await client.post("/api/v1/accounts/login/", json={"email": email, "password": new_pw})
+    assert login_check.status_code == 201
+    assert "access_token" in login_check.json()
+
+
+@pytest.mark.asyncio
+async def test_change_password_wrong_old(client, db_session, seed_user_groups):
+    """Test password change fails with incorrect old password."""
+    email = "wrong_old@example.com"
+    old_pw = "CorrectOld123!"
+    valid_new_pw = "StrongNewPassword123!"
+
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=old_pw, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": old_pw})
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payload = {
+        "old_password": "WrongOldPassword123!",
+        "new_password": valid_new_pw
+    }
+    response = await client.patch("/api/v1/accounts/password-change/", json=payload, headers=headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid old password."
