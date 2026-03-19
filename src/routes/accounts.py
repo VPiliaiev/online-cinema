@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import cast
 
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status, HTTPException, BackgroundTasks
 from sqlalchemy import select, delete
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +18,7 @@ from database import (
     RefreshTokenModel
 )
 from exceptions import BaseSecurityError
-from notifications import EmailSenderInterface
+from notifications import EmailSenderInterface, EmailSender
 from schemas import (
     UserRegistrationRequestSchema,
     UserRegistrationResponseSchema,
@@ -31,6 +31,9 @@ from schemas import (
     TokenRefreshRequestSchema,
     TokenRefreshResponseSchema
 )
+from schemas.accounts import PasswordChangeRequestSchema, UserGroupChangeRequestSchema, AdminUserUpdateSchema
+from schemas.profiles import UserMeResponseSchema, ProfileResponseSchema
+from security.http import get_token
 from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
@@ -67,8 +70,9 @@ router = APIRouter()
 )
 async def register_user(
         user_data: UserRegistrationRequestSchema,
-        db: AsyncSession = Depends(get_db),
+        background_tasks: BackgroundTasks,
         email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator),
+        db: AsyncSession = Depends(get_db),
 ) -> UserRegistrationResponseSchema:
     """
     Endpoint for user registration.
@@ -80,7 +84,6 @@ async def register_user(
     Args:
         user_data (UserRegistrationRequestSchema): The registration details including email and password.
         db (AsyncSession): The asynchronous database session.
-        email_sender (EmailSenderInterface): The asynchronous email sender.
 
     Returns:
         UserRegistrationResponseSchema: The newly created user's details.
@@ -119,9 +122,16 @@ async def register_user(
 
         activation_token = ActivationTokenModel(user_id=new_user.id)
         db.add(activation_token)
-
         await db.commit()
         await db.refresh(new_user)
+        activation_link = f"http://127.0.0.1/accounts/activate/?token={activation_token.token}"
+
+        background_tasks.add_task(
+            email_sender.send_activation_email,
+            str(new_user.email),
+            activation_link
+        )
+
     except SQLAlchemyError as e:
         await db.rollback()
         raise HTTPException(
@@ -129,13 +139,6 @@ async def register_user(
             detail="An error occurred during user creation."
         ) from e
     else:
-        activation_link = "http://127.0.0.1/accounts/activate/"
-
-        await email_sender.send_activation_email(
-            new_user.email,
-            activation_link
-        )
-
         return UserRegistrationResponseSchema.model_validate(new_user)
 
 
@@ -172,6 +175,7 @@ async def register_user(
 )
 async def activate_account(
         activation_data: UserActivationRequestSchema,
+        background_tasks: BackgroundTasks,
         db: AsyncSession = Depends(get_db),
         email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator),
 ) -> MessageResponseSchema:
@@ -186,7 +190,6 @@ async def activate_account(
     Args:
         activation_data (UserActivationRequestSchema): Contains the user's email and activation token.
         db (AsyncSession): The asynchronous database session.
-        email_sender (EmailSenderInterface): The asynchronous email sender.
 
     Returns:
         MessageResponseSchema: A response message confirming successful activation.
@@ -230,12 +233,11 @@ async def activate_account(
     await db.commit()
 
     login_link = "http://127.0.0.1/accounts/login/"
-
-    await email_sender.send_activation_complete_email(
-        str(activation_data.email),
+    background_tasks.add_task(
+        email_sender.send_activation_complete_email,
+        str(user.email),
         login_link
     )
-
     return MessageResponseSchema(message="User account activated successfully.")
 
 
@@ -251,8 +253,9 @@ async def activate_account(
 )
 async def request_password_reset_token(
         data: PasswordResetRequestSchema,
+        background_tasks: BackgroundTasks,
         db: AsyncSession = Depends(get_db),
-        email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator)
+        email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator),
 ) -> MessageResponseSchema:
     """
     Endpoint to request a password reset token.
@@ -263,7 +266,6 @@ async def request_password_reset_token(
     Args:
         data (PasswordResetRequestSchema): The request data containing the user's email.
         db (AsyncSession): The asynchronous database session.
-        email_sender (EmailSenderInterface): The asynchronous email sender.
 
     Returns:
         MessageResponseSchema: A success message indicating that instructions will be sent.
@@ -283,11 +285,11 @@ async def request_password_reset_token(
     db.add(reset_token)
     await db.commit()
 
-    password_reset_complete_link = "http://127.0.0.1/accounts/password-reset-complete/"
-
-    await email_sender.send_password_reset_email(
-        str(data.email),
-        password_reset_complete_link
+    reset_link = f"http://127.0.0.1/accounts/password-reset/?token={reset_token.token}"
+    background_tasks.add_task(
+        email_sender.send_password_reset_email,
+        str(user.email),
+        reset_link
     )
 
     return MessageResponseSchema(
@@ -304,8 +306,8 @@ async def request_password_reset_token(
     responses={
         400: {
             "description": (
-                "Bad Request - The provided email or token is invalid, "
-                "the token has expired, or the user account is not active."
+                    "Bad Request - The provided email or token is invalid, "
+                    "the token has expired, or the user account is not active."
             ),
             "content": {
                 "application/json": {
@@ -340,8 +342,9 @@ async def request_password_reset_token(
 )
 async def reset_password(
         data: PasswordResetCompleteRequestSchema,
+        background_tasks: BackgroundTasks,
         db: AsyncSession = Depends(get_db),
-        email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator)
+        email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator),
 ) -> MessageResponseSchema:
     """
     Endpoint for resetting a user's password.
@@ -353,7 +356,6 @@ async def reset_password(
         data (PasswordResetCompleteRequestSchema): The request data containing the user's email,
          token, and new password.
         db (AsyncSession): The asynchronous database session.
-        email_sender (EmailSenderInterface): The asynchronous email sender.
 
     Returns:
         MessageResponseSchema: A response message indicating successful password reset.
@@ -404,14 +406,12 @@ async def reset_password(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while resetting the password."
         )
-
     login_link = "http://127.0.0.1/accounts/login/"
-
-    await email_sender.send_password_reset_complete_email(
-        str(data.email),
+    background_tasks.add_task(
+        email_sender.send_password_reset_complete_email,
+        str(user.email),
         login_link
     )
-
     return MessageResponseSchema(message="Password reset successfully.")
 
 
@@ -616,3 +616,321 @@ async def refresh_access_token(
     new_access_token = jwt_manager.create_access_token({"user_id": user_id})
 
     return TokenRefreshResponseSchema(access_token=new_access_token)
+
+
+@router.post(
+    "/logout/",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="User Logout",
+    description="Logout the user by deleting their refresh token from the database."
+)
+async def logout_user(
+        token_data: TokenRefreshRequestSchema,
+        db: AsyncSession = Depends(get_db),
+):
+    """
+    Endpoint for user logout.
+
+    Deletes the provided refresh token from the database, ending the session.
+    """
+    stmt = delete(RefreshTokenModel).where(RefreshTokenModel.token == token_data.refresh_token)
+
+    result = await db.execute(stmt)
+    await db.commit()
+
+    return None
+
+
+@router.post(
+    "/activate/resend/",
+    response_model=MessageResponseSchema,
+    summary="Resend Activation Token",
+    description="Send a new activation link if the previous one expired or was lost.",
+    status_code=status.HTTP_200_OK,
+)
+async def resend_activation_token(
+        data: PasswordResetRequestSchema,
+        background_tasks: BackgroundTasks,
+        db: AsyncSession = Depends(get_db),
+        email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator),
+) -> MessageResponseSchema:
+    stmt = select(UserModel).where(UserModel.email == data.email)
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+
+    if not user or user.is_active:
+        return MessageResponseSchema(message="If the account is not active, a new link has been sent.")
+
+    await db.execute(delete(ActivationTokenModel).where(ActivationTokenModel.user_id == user.id))
+
+    new_token = ActivationTokenModel(user_id=user.id)
+    db.add(new_token)
+    await db.commit()
+
+    activation_link = f"http://127.0.0.1/accounts/activate/?token={new_token.token}"
+    background_tasks.add_task(
+        email_sender.send_activation_email,
+        str(user.email),
+        activation_link
+    )
+
+    return MessageResponseSchema(message="A new activation link has been sent to your email.")
+
+
+@router.patch(
+    "/password-change/",
+    response_model=MessageResponseSchema,
+    status_code=status.HTTP_200_OK,
+)
+async def change_password(
+        data: PasswordChangeRequestSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> MessageResponseSchema:
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        user_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired."
+        )
+
+    stmt = select(UserModel).where(UserModel.id == user_id)
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or not active."
+        )
+
+    if not user.verify_password(data.old_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid old password."
+        )
+
+    if data.old_password == data.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password cannot be the same as the old one."
+        )
+
+    user.password = data.new_password
+
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while updating the password."
+        )
+
+    return MessageResponseSchema(message="Password changed successfully.")
+
+
+@router.get(
+    "/me/",
+    response_model=UserMeResponseSchema,
+    summary="Get Current User Profile",
+    description=(
+            "Retrieves the detailed profile of the currently authenticated user. "
+            "Includes basic account information, the assigned user group, and profile details."
+    ),
+    status_code=status.HTTP_200_OK,
+    responses={
+        401: {"description": "Unauthorized - Invalid or expired token."},
+        404: {"description": "Not Found - User not found."},
+    },
+)
+async def get_my_profile(
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> UserMeResponseSchema:
+    """
+    Endpoint to fetch the current user's data.
+
+    Args:
+        token (str): The JWT access token from the Authorization header.
+        jwt_manager (JWTAuthManagerInterface): Manager for token operations.
+        db (AsyncSession): The database session.
+
+    Returns:
+        UserMeResponseSchema: Aggregated user and profile data.
+
+    Raises:
+        HTTPException: 401 if the token is invalid or 404 if the user doesn't exist.
+    """
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        user_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token."
+        )
+
+    stmt = (
+        select(UserModel)
+        .options(
+            joinedload(UserModel.profile),
+            joinedload(UserModel.group)
+        )
+        .where(UserModel.id == user_id)
+    )
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+
+    return UserMeResponseSchema(
+        id=user.id,
+        email=user.email,
+        is_active=user.is_active,
+        group_name=user.group.name.value,
+        created_at=user.created_at,
+        profile=ProfileResponseSchema.model_validate(user.profile) if user.profile else None
+    )
+
+
+@router.patch(
+    "/{user_id}/group/",
+    response_model=MessageResponseSchema,
+    summary="Change User Group (Admin Only)",
+    description="Allows an administrator to change the group of a specific user.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "Group updated successfully."},
+        403: {"description": "Forbidden - Only admins can perform this action."},
+        404: {"description": "Not Found - User or group not found."},
+    },
+)
+async def change_user_group(
+        user_id: int,
+        data: UserGroupChangeRequestSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> MessageResponseSchema:
+    """
+    Endpoint for admins to promote or demote users.
+    """
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        admin_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+
+    admin_stmt = (
+        select(UserModel)
+        .options(joinedload(UserModel.group))
+        .where(UserModel.id == admin_id)
+    )
+    admin_res = await db.execute(admin_stmt)
+    admin = admin_res.scalars().first()
+
+    if not admin or admin.group.name != UserGroupEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can perform this action."
+        )
+
+    user_stmt = select(UserModel).where(UserModel.id == user_id)
+    user_res = await db.execute(user_stmt)
+    target_user = user_res.scalars().first()
+
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User to update not found."
+        )
+
+    group_stmt = select(UserGroupModel).where(UserGroupModel.name == data.new_group)
+    group_res = await db.execute(group_stmt)
+    new_group_obj = group_res.scalars().first()
+
+    if not new_group_obj:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target group not found in database."
+        )
+
+    target_user.group_id = new_group_obj.id
+
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Database error.")
+
+    return MessageResponseSchema(message=f"User group updated to {data.new_group.value}")
+
+
+@router.patch(
+    "/{user_id}/activate/",
+    response_model=MessageResponseSchema,
+    summary="Manual User Activation (Admin Only)",
+    description="Allows an administrator to manually toggle the 'is_active' status of any user account without a token.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "User status updated successfully."},
+        403: {"description": "Forbidden - Admin rights required."},
+        404: {"description": "Not Found - User not found."},
+    },
+)
+async def manual_user_activation(
+        user_id: int,
+        data: AdminUserUpdateSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> MessageResponseSchema:
+    """
+    Forcefully activate or deactivate a user account.
+    """
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        admin_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+
+    admin_stmt = (
+        select(UserModel)
+        .options(joinedload(UserModel.group))
+        .where(UserModel.id == admin_id)
+    )
+    admin_res = await db.execute(admin_stmt)
+    admin = admin_res.scalars().first()
+
+    if not admin or admin.group.name != UserGroupEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Admin privileges required."
+        )
+
+    user_stmt = select(UserModel).where(UserModel.id == user_id)
+    user_res = await db.execute(user_stmt)
+    target_user = user_res.scalars().first()
+
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    target_user.is_active = data.is_active
+
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Database commit failed.")
+
+    action = "activated" if data.is_active else "deactivated"
+    return MessageResponseSchema(message=f"User account has been successfully {action}.")

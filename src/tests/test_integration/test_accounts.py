@@ -992,3 +992,283 @@ async def test_refresh_access_token_user_not_found(client, db_session, jwt_manag
 
     assert refresh_response.status_code == 404, "Expected status code 404 for non-existent user."
     assert refresh_response.json()["detail"] == "User not found.", "Unexpected error message."
+
+
+@pytest.mark.asyncio
+async def test_logout_user_success(client, db_session, seed_user_groups):
+    """
+    Test successful logout.
+
+    Validates that the refresh token is deleted from the database after logout.
+    """
+    email = "logout_test@example.com"
+    password = "StrongPassword123!"
+
+    stmt_group = select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+    result_group = await db_session.execute(stmt_group)
+    user_group = result_group.scalars().first()
+
+    user = UserModel.create(email=email, raw_password=password, group_id=user_group.id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_payload = {"email": email, "password": password}
+    login_response = await client.post("/api/v1/accounts/login/", json=login_payload)
+    refresh_token = login_response.json()["refresh_token"]
+
+    stmt_check = select(RefreshTokenModel).where(RefreshTokenModel.token == refresh_token)
+    result_check = await db_session.execute(stmt_check)
+    assert result_check.scalars().first() is not None, "Token should be in DB before logout."
+
+    logout_payload = {"refresh_token": refresh_token}
+    response = await client.post("/api/v1/accounts/logout/", json=logout_payload)
+
+    assert response.status_code == 204, "Expected 204 status code for successful logout."
+
+    result_after = await db_session.execute(stmt_check)
+    assert result_after.scalars().first() is None, "Refresh token should be deleted from DB after logout."
+
+
+@pytest.mark.asyncio
+async def test_logout_non_existent_token(client, db_session):
+    """
+    Test logout with a token that doesn't exist in the database.
+
+    Should still return 204 to avoid leaking information about token existence.
+    """
+    logout_payload = {"refresh_token": "some_fake_non_existent_token_123"}
+    response = await client.post("/api/v1/accounts/logout/", json=logout_payload)
+
+    assert response.status_code == 204, "Logout should return 204 even if token is not found."
+
+
+@pytest.mark.asyncio
+async def test_logout_invalidates_refresh_token(client, db_session, seed_user_groups):
+    """
+    1. Login to get a valid refresh token.
+    2. Logout to delete that token.
+    3. Attempt to use the deleted token at /refresh/ endpoint.
+    4. Expect 401 Unauthorized.
+    """
+    email = "security_test@example.com"
+    password = "StrongPassword123!"
+
+    res_group = await db_session.execute(
+        select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+    )
+    user_group = res_group.scalars().first()
+
+    user = UserModel.create(email=email, raw_password=password, group_id=user_group.id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    refresh_token = login_res.json()["refresh_token"]
+
+    await client.post("/api/v1/accounts/logout/", json={"refresh_token": refresh_token})
+
+    refresh_res = await client.post("/api/v1/accounts/refresh/", json={"refresh_token": refresh_token})
+
+    assert refresh_res.status_code == 401, "Should not be able to refresh token after logout."
+    assert refresh_res.json()["detail"] == "Refresh token not found.", "Unexpected error message."
+
+
+@pytest.mark.asyncio
+async def test_resend_activation_token_success(client, db_session, seed_user_groups):
+    """Test successful replacement of an activation token."""
+    email = "resend_test@example.com"
+
+    stmt_group = select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+    result_group = await db_session.execute(stmt_group)
+    user_group = result_group.scalars().first()
+
+    user = UserModel.create(email=email, raw_password="StrongPassword123!", group_id=user_group.id)
+    user.is_active = False
+    db_session.add(user)
+    await db_session.flush()
+    target_user_id = user.id
+
+    old_token_record = ActivationTokenModel(user_id=target_user_id)
+    db_session.add(old_token_record)
+    await db_session.commit()
+    old_token_value = str(old_token_record.token)
+
+    response = await client.post("/api/v1/accounts/activate/resend/", json={"email": email})
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "A new activation link has been sent to your email."
+
+    db_session.expire_all()
+
+    stmt_old = select(ActivationTokenModel).where(ActivationTokenModel.token == old_token_value)
+    res_old = await db_session.execute(stmt_old)
+    assert res_old.scalars().first() is None, "Old token should be deleted from DB"
+
+    stmt_new = select(ActivationTokenModel).where(ActivationTokenModel.user_id == target_user_id)
+    res_new = await db_session.execute(stmt_new)
+    new_token_record = res_new.scalars().first()
+
+    assert new_token_record is not None, "New token record should exist"
+    assert str(new_token_record.token) != old_token_value, "New token must be different"
+
+
+@pytest.mark.asyncio
+async def test_resend_activation_already_active(client, db_session, seed_user_groups):
+    """Test resend for active user returns success message for security."""
+    email = "active@example.com"
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password="Password123!", group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    response = await client.post("/api/v1/accounts/activate/resend/", json={"email": email})
+    assert response.status_code == 200
+    assert "sent" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_resend_activation_non_existent_user(client):
+    """Test resend for non-existent email returns success message for security."""
+    response = await client.post("/api/v1/accounts/activate/resend/", json={"email": "none@example.com"})
+    assert response.status_code == 200
+    assert "sent" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_change_password_success(client, db_session, seed_user_groups):
+    """
+    Test successful password change.
+    1. Create active user.
+    2. Login to get access_token.
+    3. Call /password-change/ with valid old password.
+    """
+    email = "pass_change@example.com"
+    old_pw = "OldStrongPass123!"
+    new_pw = "NewSuperPass888!"
+
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=old_pw, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": old_pw})
+    access_token = login_res.json()["access_token"]
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    payload = {"old_password": old_pw, "new_password": new_pw}
+    response = await client.patch("/api/v1/accounts/password-change/", json=payload, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Password changed successfully."
+
+    login_check = await client.post("/api/v1/accounts/login/", json={"email": email, "password": new_pw})
+    assert login_check.status_code == 201
+    assert "access_token" in login_check.json()
+
+
+@pytest.mark.asyncio
+async def test_change_password_wrong_old(client, db_session, seed_user_groups):
+    """Test password change fails with incorrect old password."""
+    email = "wrong_old@example.com"
+    old_pw = "CorrectOld123!"
+    valid_new_pw = "StrongNewPassword123!"
+
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=old_pw, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": old_pw})
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payload = {
+        "old_password": "WrongOldPassword123!",
+        "new_password": valid_new_pw
+    }
+    response = await client.patch("/api/v1/accounts/password-change/", json=payload, headers=headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid old password."
+
+
+@pytest.mark.asyncio
+async def test_change_group_admin_success(client, db_session, seed_user_groups):
+    res_admin_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.ADMIN))
+    admin_group = res_admin_group.scalars().first()
+    admin = UserModel.create(email="admin@test.com", raw_password="AdminPass123!", group_id=admin_group.id)
+    admin.is_active = True
+    db_session.add(admin)
+
+    res_user_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user_group = res_user_group.scalars().first()
+    target_user = UserModel.create(email="target@test.com", raw_password="UserPass123!", group_id=user_group.id)
+    target_user.is_active = True
+    db_session.add(target_user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/",
+                                  json={"email": "admin@test.com", "password": "AdminPass123!"})
+    token = login_res.json()["access_token"]
+
+    payload = {"new_group": "moderator"}
+    response = await client.patch(
+        f"/api/v1/accounts/{target_user.id}/group/",
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "User group updated to moderator"
+
+    await db_session.refresh(target_user)
+    res_group_check = await db_session.execute(select(UserGroupModel).where(UserGroupModel.id == target_user.group_id))
+    updated_group = res_group_check.scalars().first()
+    assert updated_group.name == UserGroupEnum.MODERATOR
+
+
+@pytest.mark.asyncio
+async def test_admin_manual_activation_success(client, db_session, seed_user_groups):
+    """Test that an admin can manually activate a user account."""
+    res_admin_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.ADMIN))
+    admin = UserModel.create(
+        email="superadmin@test.com",
+        raw_password="AdminSafePass123!",
+        group_id=res_admin_group.scalars().first().id
+    )
+    admin.is_active = True
+    db_session.add(admin)
+
+    res_user_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    target_user = UserModel.create(
+        email="to_be_activated@test.com",
+        raw_password="UserPass123!",
+        group_id=res_user_group.scalars().first().id
+    )
+    target_user.is_active = False
+    db_session.add(target_user)
+    await db_session.commit()
+
+    login_res = await client.post(
+        "/api/v1/accounts/login/",
+        json={"email": "superadmin@test.com", "password": "AdminSafePass123!"}
+    )
+    token = login_res.json()["access_token"]
+
+    response = await client.patch(
+        f"/api/v1/accounts/{target_user.id}/activate/",
+        json={"is_active": True},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    assert "activated" in response.json()["message"]
+
+    await db_session.refresh(target_user)
+    assert target_user.is_active is True
