@@ -82,3 +82,9 @@ class UserGroupChangeRequestSchema(BaseModel):
     new_group: UserGroupEnum
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AdminUserUpdateSchema(BaseModel):
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)

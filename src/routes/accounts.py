@@ -31,7 +31,7 @@ from schemas import (
     TokenRefreshRequestSchema,
     TokenRefreshResponseSchema
 )
-from schemas.accounts import PasswordChangeRequestSchema, UserGroupChangeRequestSchema
+from schemas.accounts import PasswordChangeRequestSchema, UserGroupChangeRequestSchema, AdminUserUpdateSchema
 from schemas.profiles import UserMeResponseSchema, ProfileResponseSchema
 from security.http import get_token
 from security.interfaces import JWTAuthManagerInterface
@@ -873,3 +873,64 @@ async def change_user_group(
         raise HTTPException(status_code=500, detail="Database error.")
 
     return MessageResponseSchema(message=f"User group updated to {data.new_group.value}")
+
+
+@router.patch(
+    "/{user_id}/activate/",
+    response_model=MessageResponseSchema,
+    summary="Manual User Activation (Admin Only)",
+    description="Allows an administrator to manually toggle the 'is_active' status of any user account without a token.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "User status updated successfully."},
+        403: {"description": "Forbidden - Admin rights required."},
+        404: {"description": "Not Found - User not found."},
+    },
+)
+async def manual_user_activation(
+        user_id: int,
+        data: AdminUserUpdateSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db),
+) -> MessageResponseSchema:
+    """
+    Forcefully activate or deactivate a user account.
+    """
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        admin_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+
+    admin_stmt = (
+        select(UserModel)
+        .options(joinedload(UserModel.group))
+        .where(UserModel.id == admin_id)
+    )
+    admin_res = await db.execute(admin_stmt)
+    admin = admin_res.scalars().first()
+
+    if not admin or admin.group.name != UserGroupEnum.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Admin privileges required."
+        )
+
+    user_stmt = select(UserModel).where(UserModel.id == user_id)
+    user_res = await db.execute(user_stmt)
+    target_user = user_res.scalars().first()
+
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    target_user.is_active = data.is_active
+
+    try:
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Database commit failed.")
+
+    action = "activated" if data.is_active else "deactivated"
+    return MessageResponseSchema(message=f"User account has been successfully {action}.")

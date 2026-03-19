@@ -1231,3 +1231,44 @@ async def test_change_group_admin_success(client, db_session, seed_user_groups):
     res_group_check = await db_session.execute(select(UserGroupModel).where(UserGroupModel.id == target_user.group_id))
     updated_group = res_group_check.scalars().first()
     assert updated_group.name == UserGroupEnum.MODERATOR
+
+
+@pytest.mark.asyncio
+async def test_admin_manual_activation_success(client, db_session, seed_user_groups):
+    """Test that an admin can manually activate a user account."""
+    res_admin_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.ADMIN))
+    admin = UserModel.create(
+        email="superadmin@test.com",
+        raw_password="AdminSafePass123!",
+        group_id=res_admin_group.scalars().first().id
+    )
+    admin.is_active = True
+    db_session.add(admin)
+
+    res_user_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    target_user = UserModel.create(
+        email="to_be_activated@test.com",
+        raw_password="UserPass123!",
+        group_id=res_user_group.scalars().first().id
+    )
+    target_user.is_active = False
+    db_session.add(target_user)
+    await db_session.commit()
+
+    login_res = await client.post(
+        "/api/v1/accounts/login/",
+        json={"email": "superadmin@test.com", "password": "AdminSafePass123!"}
+    )
+    token = login_res.json()["access_token"]
+
+    response = await client.patch(
+        f"/api/v1/accounts/{target_user.id}/activate/",
+        json={"is_active": True},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    assert "activated" in response.json()["message"]
+
+    await db_session.refresh(target_user)
+    assert target_user.is_active is True
