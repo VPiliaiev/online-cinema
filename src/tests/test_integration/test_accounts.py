@@ -1073,3 +1073,65 @@ async def test_logout_invalidates_refresh_token(client, db_session, seed_user_gr
 
     assert refresh_res.status_code == 401, "Should not be able to refresh token after logout."
     assert refresh_res.json()["detail"] == "Refresh token not found.", "Unexpected error message."
+
+
+@pytest.mark.asyncio
+async def test_resend_activation_token_success(client, db_session, seed_user_groups):
+    """Test successful replacement of an activation token."""
+    email = "resend_test@example.com"
+
+    stmt_group = select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+    result_group = await db_session.execute(stmt_group)
+    user_group = result_group.scalars().first()
+
+    user = UserModel.create(email=email, raw_password="StrongPassword123!", group_id=user_group.id)
+    user.is_active = False
+    db_session.add(user)
+    await db_session.flush()
+    target_user_id = user.id
+
+    old_token_record = ActivationTokenModel(user_id=target_user_id)
+    db_session.add(old_token_record)
+    await db_session.commit()
+    old_token_value = str(old_token_record.token)
+
+    response = await client.post("/api/v1/accounts/activate/resend/", json={"email": email})
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "A new activation link has been sent to your email."
+
+    db_session.expire_all()
+
+    stmt_old = select(ActivationTokenModel).where(ActivationTokenModel.token == old_token_value)
+    res_old = await db_session.execute(stmt_old)
+    assert res_old.scalars().first() is None, "Old token should be deleted from DB"
+
+    stmt_new = select(ActivationTokenModel).where(ActivationTokenModel.user_id == target_user_id)
+    res_new = await db_session.execute(stmt_new)
+    new_token_record = res_new.scalars().first()
+
+    assert new_token_record is not None, "New token record should exist"
+    assert str(new_token_record.token) != old_token_value, "New token must be different"
+
+
+@pytest.mark.asyncio
+async def test_resend_activation_already_active(client, db_session, seed_user_groups):
+    """Test resend for active user returns success message for security."""
+    email = "active@example.com"
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password="Password123!", group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    response = await client.post("/api/v1/accounts/activate/resend/", json={"email": email})
+    assert response.status_code == 200
+    assert "sent" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_resend_activation_non_existent_user(client):
+    """Test resend for non-existent email returns success message for security."""
+    response = await client.post("/api/v1/accounts/activate/resend/", json={"email": "none@example.com"})
+    assert response.status_code == 200
+    assert "sent" in response.json()["message"]

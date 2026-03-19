@@ -636,3 +636,39 @@ async def logout_user(
     await db.commit()
 
     return None
+
+
+@router.post(
+    "/activate/resend/",
+    response_model=MessageResponseSchema,
+    summary="Resend Activation Token",
+    description="Send a new activation link if the previous one expired or was lost.",
+    status_code=status.HTTP_200_OK,
+)
+async def resend_activation_token(
+        data: PasswordResetRequestSchema,
+        background_tasks: BackgroundTasks,
+        db: AsyncSession = Depends(get_db),
+        email_sender: EmailSenderInterface = Depends(get_accounts_email_notificator),
+) -> MessageResponseSchema:
+    stmt = select(UserModel).where(UserModel.email == data.email)
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+
+    if not user or user.is_active:
+        return MessageResponseSchema(message="If the account is not active, a new link has been sent.")
+
+    await db.execute(delete(ActivationTokenModel).where(ActivationTokenModel.user_id == user.id))
+
+    new_token = ActivationTokenModel(user_id=user.id)
+    db.add(new_token)
+    await db.commit()
+
+    activation_link = f"http://127.0.0.1/accounts/activate/?token={new_token.token}"
+    background_tasks.add_task(
+        email_sender.send_activation_email,
+        str(user.email),
+        activation_link
+    )
+
+    return MessageResponseSchema(message="A new activation link has been sent to your email.")
