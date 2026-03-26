@@ -24,6 +24,10 @@ if ! psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt" | g
         alembic -c $ALEMBIC_CONFIG revision --autogenerate -m "initial migration"
     fi
 
+    echo "Create migrations"
+    alembic -c $ALEMBIC_CONFIG revision --autogenerate -m "initial migration"
+
+
     echo "Applying all migrations..."
     alembic -c $ALEMBIC_CONFIG upgrade head
 
