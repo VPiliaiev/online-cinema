@@ -1,5 +1,7 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -21,66 +23,84 @@ router = APIRouter()
 @router.get(
     "/movies/",
     response_model=MovieListResponseSchema,
-    summary="Get a paginated list of movies",
+    summary="Get a paginated and filtered list of movies",
     description=(
-            "<h3>This endpoint retrieves a paginated list of movies from the database.</h3>"
-            "<p>Clients can specify the `page` number and the number of items per page using `per_page`. "
-            "The response includes basic movie details,"
-            " genres, and pagination metadata (total pages, links to next/prev).</p>"
+            "<h3>Retrieve movies with advanced filtering, searching, and sorting.</h3>"
+            "<ul>"
+            "<li><b>Search:</b> Filter by title or description using partial matches.</li>"
+            "<li><b>Crew:</b> Search movies by specific actor or director names.</li>"
+            "<li><b>Ranges:</b> Filter movies by release year range and minimum IMDb rating.</li>"
+            "<li><b>Pagination:</b> Control result set using page and per_page parameters.</li>"
+            "<li><b>Sorting:</b> Sort by ID, Name, Year, IMDb score, or Price.</li>"
+            "</ul>"
     ),
     responses={
+        200: {"description": "Successfully retrieved the movie list."},
         404: {
-            "description": "No movies found.",
-            "content": {"application/json": {"example": {"detail": "No movies found."}}}
+            "description": "No movies found matching the criteria.",
+            "content": {"application/json": {"example": {"detail": "No movies found"}}}
         }
     }
 )
 async def get_movie_list(
-        page: int = Query(1, ge=1, description="Page number (1-based index)"),
-        per_page: int = Query(10, ge=1, le=20, description="Number of items per page"),
+        page: int = Query(1, ge=1, description="The page number to retrieve"),
+        per_page: int = Query(10, ge=1, le=20, description="Items per page"),
+        search: Optional[str] = Query(None, description="Search term for title or description"),
+        actor: Optional[str] = Query(None, description="Filter by actor name"),
+        director: Optional[str] = Query(None, description="Filter by director name"),
+        year_from: Optional[int] = Query(None, ge=1888, description="Release year from"),
+        year_to: Optional[int] = Query(None, ge=1888, description="Release year to"),
+        imdb_min: Optional[float] = Query(None, ge=0, le=10, description="Minimum IMDb rating"),
+        sort_by: str = Query("id", enum=["id", "name", "year", "imdb", "price"]),
+        order: str = Query("desc", enum=["asc", "desc"]),
         db: AsyncSession = Depends(get_db),
 ) -> MovieListResponseSchema:
-    """
-    Fetch a paginated list of movies from the database (asynchronously).
+    stmt = select(MovieModel).options(selectinload(MovieModel.genres))
 
-    :param page: The page number to retrieve (1-based index).
-    :param per_page: The number of items to display per page (max 20).
-    :param db: The async SQLAlchemy database session.
-    :return: A response containing the paginated list of movies and metadata.
-    """
-    offset = (page - 1) * per_page
+    if search:
+        stmt = stmt.where(
+            or_(
+                MovieModel.name.ilike(f"%{search}%"),
+                MovieModel.description.ilike(f"%{search}%")
+            )
+        )
 
-    count_stmt = select(func.count(MovieModel.id))
-    result_count = await db.execute(count_stmt)
-    total_items = result_count.scalar() or 0
+    if year_from:
+        stmt = stmt.where(MovieModel.year >= year_from)
+    if year_to:
+        stmt = stmt.where(MovieModel.year <= year_to)
+    if imdb_min:
+        stmt = stmt.where(MovieModel.imdb >= imdb_min)
+    if actor:
+        stmt = stmt.where(MovieModel.stars.any(StarModel.name.ilike(f"%{actor}%")))
+    if director:
+        stmt = stmt.where(MovieModel.directors.any(DirectorModel.name.ilike(f"%{director}%")))
 
+    SORT_FIELDS = {
+        "id": MovieModel.id,
+        "name": MovieModel.name,
+        "year": MovieModel.year,
+        "imdb": MovieModel.imdb,
+        "price": MovieModel.price,
+    }
+    column = SORT_FIELDS.get(sort_by, MovieModel.id)
+    stmt = stmt.order_by(column.asc() if order == "asc" else column.desc())
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    count_result = await db.execute(count_stmt)
+    total_items = count_result.scalar() or 0
     if total_items == 0:
         raise HTTPException(status_code=404, detail="No movies found.")
-
-    stmt = (
-        select(MovieModel)
-        .options(selectinload(MovieModel.genres))
-        .offset(offset)
-        .limit(per_page)
-    )
-
-    order_by = MovieModel.default_order_by()
-    if order_by:
-        stmt = stmt.order_by(*order_by)
-
-    result_movies = await db.execute(stmt)
-    movies = result_movies.scalars().all()
-
+    offset = (page - 1) * per_page
+    stmt = stmt.offset(offset).limit(per_page)
+    result = await db.execute(stmt)
+    movies = result.scalars().all()
     if not movies:
-        raise HTTPException(status_code=404, detail="No movies found for this page.")
-
-    movie_list = [MovieListItemSchema.model_validate(movie) for movie in movies]
+        raise HTTPException(status_code=404, detail="No movies found for this page")
     total_pages = (total_items + per_page - 1) // per_page
-
     return MovieListResponseSchema(
-        movies=movie_list,
-        prev_page=f"/theater/movies/?page={page - 1}&per_page={per_page}" if page > 1 else None,
-        next_page=f"/theater/movies/?page={page + 1}&per_page={per_page}" if page < total_pages else None,
+        movies=[MovieListItemSchema.model_validate(m) for m in movies],
+        prev_page=f"/movies/?page={page - 1}" if page > 1 else None,
+        next_page=f"/movies/?page={page + 1}" if page < total_pages else None,
         total_pages=total_pages,
         total_items=total_items,
     )

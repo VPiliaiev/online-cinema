@@ -7,12 +7,11 @@ from database import MovieModel, GenreModel, StarModel, DirectorModel, Certifica
 
 @pytest.mark.asyncio
 async def test_get_movies_empty_database(client):
-    """
-    Test that the `/movies/` endpoint returns a 404 error when the database is empty.
-    """
+    from database import reset_database
+    await reset_database()
+
     response = await client.get("/api/v1/theater/movies/")
     assert response.status_code == 404
-    assert response.json() == {"detail": "No movies found."}
 
 
 @pytest.mark.asyncio
@@ -276,3 +275,71 @@ async def test_create_movie_invalid_score_range(client):
     response = await client.post("/api/v1/theater/movies/", json=movie_data)
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_search_by_title(client, seed_database):
+    """Test searching for a movie by title."""
+    search_term = "Movie 01"
+    response = await client.get(f"/api/v1/theater/movies/?search={search_term}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["movies"]) >= 1
+    assert search_term in data["movies"][0]["name"]
+
+
+@pytest.mark.asyncio
+async def test_filter_by_year_range(client, seed_database):
+    """Test filtering movies within a specific year range."""
+    year_from = 2021
+    year_to = 2022
+    response = await client.get(f"/api/v1/theater/movies/?year_from={year_from}&year_to={year_to}")
+
+    assert response.status_code == 200
+    data = response.json()
+    for movie in data["movies"]:
+        assert year_from <= movie["year"] <= year_to
+
+
+@pytest.mark.asyncio
+async def test_filter_by_actor(client, seed_database):
+    """Test filtering movies by actor name."""
+    actor_name = "Test Actor"
+    response = await client.get(f"/api/v1/theater/movies/?actor={actor_name}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["movies"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_sorting_by_price_desc(client, seed_database):
+    """Test sorting movies by price in descending order."""
+    response = await client.get("/api/v1/theater/movies/?sort_by=price&order=desc")
+
+    assert response.status_code == 200
+    movies = response.json()["movies"]
+    prices = [m["price"] for m in movies]
+    assert prices == sorted(prices, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_search_no_results(client, seed_database):
+    """Test search with a term that matches nothing (expect 404)."""
+    response = await client.get("/api/v1/theater/movies/?search=NonExistentMovie")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No movies found."
+
+
+@pytest.mark.asyncio
+async def test_filter_by_imdb_rating(client, seed_database):
+    """Test filtering movies by minimum IMDb score."""
+    imdb_min = 8.0
+    response = await client.get(f"/api/v1/theater/movies/?imdb_min={imdb_min}")
+
+    assert response.status_code == 200
+    movies = response.json()["movies"]
+    for movie in movies:
+        assert float(movie["imdb"]) >= imdb_min
