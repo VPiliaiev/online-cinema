@@ -1,12 +1,18 @@
 from typing import Optional
 
+from aiosmtplib import status
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, Integer, cast
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
-from database import get_db, MovieModel, CertificationModel, StarModel, DirectorModel
+from config import get_jwt_auth_manager
+from database.models.movies import MovieReactionModel
+from exceptions import BaseSecurityError
+from security.http import get_token
+
+from database import get_db, MovieModel, CertificationModel, StarModel, DirectorModel, UserModel
 from database import (
     GenreModel
 )
@@ -15,7 +21,8 @@ from schemas import (
     MovieListItemSchema,
     MovieDetailSchema
 )
-from schemas.movies import MovieCreateSchema, MovieUpdateSchema
+from schemas.movies import MovieCreateSchema, MovieUpdateSchema, ReactionResponseSchema, ReactionCreateSchema
+from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
 
@@ -309,3 +316,89 @@ async def update_movie(
         raise HTTPException(status_code=500, detail=str(e))
 
     return movie
+
+
+@router.post(
+    "/movies/{movie_id}/react/",
+    summary="Like or dislike a movie",
+    description=(
+            "<p>If you send the same reaction twice, it will be <b>removed</b>. "
+            "If you change from like to dislike, the record will be <b>updated</b>.</p>"
+    ),
+    response_model=ReactionResponseSchema
+)
+async def react_to_movie(
+        movie_id: int,
+        reaction: ReactionCreateSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db)
+):
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        user_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired or is invalid."
+        )
+
+    stmt = select(UserModel).where(UserModel.id == user_id)
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or not active."
+        )
+
+    movie_stmt = select(MovieModel).where(MovieModel.id == movie_id)
+    movie_res = await db.execute(movie_stmt)
+    movie_exists = movie_res.scalars().first()
+
+    if not movie_exists:
+        raise HTTPException(status_code=404, detail="Movie not found.")
+
+    existing_stmt = select(MovieReactionModel).where(
+        MovieReactionModel.user_id == user.id,
+        MovieReactionModel.movie_id == movie_id
+    )
+    existing_res = await db.execute(existing_stmt)
+    existing = existing_res.scalars().first()
+
+    if existing:
+        if existing.is_like == reaction.is_like:
+            await db.delete(existing)
+        else:
+            existing.is_like = reaction.is_like
+    else:
+        new_reaction = MovieReactionModel(
+            user_id=user.id,
+            movie_id=movie_id,
+            is_like=reaction.is_like
+        )
+        db.add(new_reaction)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Database error during reaction update")
+    stats_stmt = select(
+        func.count().filter(MovieReactionModel.is_like == True).label("likes"),
+        func.count().filter(MovieReactionModel.is_like == False).label("dislikes")
+    ).where(MovieReactionModel.movie_id == movie_id)
+    stats_res = await db.execute(stats_stmt)
+    stats = stats_res.one()
+    user_reaction_stmt = select(MovieReactionModel.is_like).where(
+        MovieReactionModel.user_id == user.id,
+        MovieReactionModel.movie_id == movie_id
+    )
+    user_reaction_res = await db.execute(user_reaction_stmt)
+    user_reaction = user_reaction_res.scalars().first()
+
+    return ReactionResponseSchema(
+        likes_count=stats.likes,
+        dislikes_count=stats.dislikes,
+        user_reaction=user_reaction
+    )
