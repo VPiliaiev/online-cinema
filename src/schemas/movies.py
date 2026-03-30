@@ -123,3 +123,13 @@ class MovieUpdateSchema(BaseModel):
     model_config = {
         "from_attributes": True,
     }
+
+
+class ReactionCreateSchema(BaseModel):
+    is_like: bool
+
+
+class ReactionResponseSchema(BaseModel):
+    likes_count: int
+    dislikes_count: int
+    user_reaction: Optional[bool] = None
