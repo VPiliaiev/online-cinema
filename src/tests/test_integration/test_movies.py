@@ -2,7 +2,9 @@ import pytest
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload, joinedload
 
-from database import MovieModel, GenreModel, StarModel, DirectorModel, CertificationModel
+from database import MovieModel, GenreModel, StarModel, DirectorModel, CertificationModel, UserGroupModel, \
+    UserGroupEnum, UserModel
+from database.models.movies import MovieReactionModel
 
 
 @pytest.mark.asyncio
@@ -343,3 +345,115 @@ async def test_filter_by_imdb_rating(client, seed_database):
     movies = response.json()["movies"]
     for movie in movies:
         assert float(movie["imdb"]) >= imdb_min
+
+
+@pytest.mark.asyncio
+async def test_react_to_movie_add_like_success(client, db_session, seed_user_groups, seed_database):
+    """
+    Test successful addition of a like to a movie
+    1. Create and activate a user
+    2. Login to get access token
+    3. Post a like reaction
+    4. Verify DB state and response data
+    """
+    email = "liker@example.com"
+    password = "Password123!"
+
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user_group = res_group.scalars().first()
+    user = UserModel.create(email=email, raw_password=password, group_id=user_group.id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    token = login_res.json()["access_token"]
+
+    movie_id = 1
+    response = await client.post(
+        f"/api/v1/theater/movies/{movie_id}/react/",
+        json={"is_like": True},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["likes_count"] == 1
+    assert data["user_reaction"] is True
+
+    stmt = select(MovieReactionModel).where(
+        MovieReactionModel.user_id == user.id,
+        MovieReactionModel.movie_id == movie_id
+    )
+    result = await db_session.execute(stmt)
+    reaction_record = result.scalars().first()
+    assert reaction_record is not None
+    assert reaction_record.is_like is True
+
+
+@pytest.mark.asyncio
+async def test_react_to_movie_toggle_off(client, db_session, seed_user_groups, seed_database):
+    """
+    Test that sending the same reaction twice removes it.
+    """
+    email = "toggler@example.com"
+    password = "Password123!"
+    movie_id = 1
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=password, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    await client.post(f"/api/v1/theater/movies/{movie_id}/react/", json={"is_like": True}, headers=headers)
+    response = await client.post(f"/api/v1/theater/movies/{movie_id}/react/", json={"is_like": True}, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["likes_count"] == 0
+    assert response.json()["user_reaction"] is None
+    stmt = select(MovieReactionModel).where(MovieReactionModel.user_id == user.id)
+    result = await db_session.execute(stmt)
+    assert result.scalars().first() is None
+
+
+@pytest.mark.asyncio
+async def test_react_to_movie_change_type(client, db_session, seed_user_groups, seed_database):
+    """
+    Test changing a reaction from like to dislike.
+    """
+    email = "changer@example.com"
+    password = "Password123!"
+    movie_id = 1
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=password, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+    await client.post(f"/api/v1/theater/movies/{movie_id}/react/", json={"is_like": True}, headers=headers)
+    response = await client.post(f"/api/v1/theater/movies/{movie_id}/react/", json={"is_like": False}, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["likes_count"] == 0
+    assert response.json()["dislikes_count"] == 1
+    assert response.json()["user_reaction"] is False
+
+
+@pytest.mark.asyncio
+async def test_react_to_movie_not_found(client, db_session, seed_user_groups):
+    """
+    Test reaction to a non-existent movie ID.
+    """
+    email = "error_test@example.com"
+    password = "Password123!"
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=password, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+    response = await client.post("/api/v1/theater/movies/9999/react/", json={"is_like": True}, headers=headers)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Movie not found."
