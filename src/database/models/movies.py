@@ -215,3 +215,19 @@ class CommentMovieModel(Base):
         backref="replies",
         cascade="all, delete"
     )
+
+
+class MovieReactionModel(Base):
+    __tablename__ = "movie_reactions"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    movie_id: Mapped[int] = mapped_column(ForeignKey("movies.id"), primary_key=True)
+
+    is_like: Mapped[bool] = mapped_column(nullable=False)
+
+    user = relationship("UserModel")
+    movie = relationship("MovieModel")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "movie_id", name="unique_user_movie_reaction"),
+    )
