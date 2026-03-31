@@ -167,3 +167,9 @@ class CommentTreeResponseSchema(CommentResponseSchema):
 
 
 CommentTreeResponseSchema.model_rebuild()
+
+
+class FavoriteResponseSchema(BaseModel):
+    movie_id: int
+    is_favorite: bool
+    message: str
