@@ -573,3 +573,57 @@ async def test_get_favorites_unauthorized(client):
     """
     response = await client.get("/api/v1/theater/favorites/")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_rate_movie_success(client, db_session, seed_user_groups, seed_database):
+    """
+    Test successful movie rating
+    """
+    email = "fav_test@example.com"
+    password = "Password123!"
+    movie_id = 1
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=password, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+    res_create = await client.post(f"/api/v1/theater/movies/{movie_id}/rate/", json={"value": 10}, headers=headers)
+    assert res_create.status_code in [200, 201]
+    assert res_create.json()["value"] == 10
+    assert "created" in res_create.json()["message"].lower()
+    res_update = await client.post(f"/api/v1/theater/movies/{movie_id}/rate/", json={"value": 1}, headers=headers)
+    assert res_update.status_code == 200
+    assert res_update.json()["value"] == 1
+    assert "updated" in res_update.json()["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_rate_movie_invalid_value(client, db_session, seed_user_groups, seed_database):
+    """
+    Test rating with value out of allowed range 1-10
+    """
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email="fav_test@example.com", raw_password="Password123!",
+                            group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login = await client.post("/api/v1/accounts/login/",
+                              json={"email": "fav_test@example.com", "password": "Password123!"})
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    res_too_high = await client.post("/api/v1/theater/movies/1/rate/", json={"value": 11}, headers=headers)
+    assert res_too_high.status_code == 422
+    res_too_low = await client.post("/api/v1/theater/movies/1/rate/", json={"value": 0}, headers=headers)
+    assert res_too_low.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_rate_movie_unauthorized(client):
+    """
+    Test  unauthorized user can not rate a movie.
+    """
+    response = await client.post("/api/v1/theater/movies/1/rate/", json={"value": 5})
+    assert response.status_code == 401
