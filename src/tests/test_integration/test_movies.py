@@ -457,3 +457,59 @@ async def test_react_to_movie_not_found(client, db_session, seed_user_groups):
     response = await client.post("/api/v1/theater/movies/9999/react/", json={"is_like": True}, headers=headers)
     assert response.status_code == 404
     assert response.json()["detail"] == "Movie not found."
+
+
+@pytest.mark.asyncio
+async def test_create_comment_and_reply_flow(client, db_session, seed_user_groups, seed_database):
+    """
+    Test the full flow of creating a main comment and then replying to it
+    """
+    email = "commenter@example.com"
+    password = "Password123!"
+    movie_id = 1
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=password, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+    main_payload = {"content": "first comment", "parent_id": None}
+    main_res = await client.post(f"/api/v1/theater/movies/{movie_id}/comments/", json=main_payload, headers=headers)
+    assert main_res.status_code == 201
+    parent_id = main_res.json()["id"]
+    reply_payload = {"content": "Reply comment", "parent_id": parent_id}
+    reply_res = await client.post(f"/api/v1/theater/movies/{movie_id}/comments/", json=reply_payload, headers=headers)
+    assert reply_res.status_code == 201
+    assert reply_res.json()["parent_id"] == parent_id
+    get_res = await client.get(f"/api/v1/theater/movies/{movie_id}/comments/")
+    assert get_res.status_code == 200
+    data = get_res.json()
+    root_comment = next((c for c in data if c["id"] == parent_id), None)
+    assert root_comment is not None
+    assert len(root_comment["replies"]) == 1
+    assert root_comment["replies"][0]["content"] == "Reply comment"
+    assert root_comment["replies"][0]["user"]["email"] == email
+
+
+@pytest.mark.asyncio
+async def test_create_comment_unauthorized(client, seed_database):
+    """
+    Test that unauthorized users cannot post comments.
+    """
+    movie_id = 1
+    response = await client.post(
+        f"/api/v1/theater/movies/{movie_id}/comments/",
+        json={"content": "Should fail", "parent_id": None}
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_comments_empty_movie(client, seed_database):
+    """
+    Test getting comments for a movie that has no comments.
+    """
+    response = await client.get("/api/v1/theater/movies/999/comments/")
+    assert response.status_code == 200
+    assert response.json() == []
