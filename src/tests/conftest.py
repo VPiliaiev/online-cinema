@@ -8,9 +8,13 @@ from database import (
     reset_database,
     get_db_contextmanager,
     UserGroupEnum,
-    UserGroupModel
+    UserGroupModel,
+    MovieModel,
+    CertificationModel,
+    GenreModel,
+    StarModel,
+    DirectorModel
 )
-from database.populate import CSVDatabaseSeeder
 from main import app
 from security.interfaces import JWTAuthManagerInterface
 from security.token_manager import JWTAuthManager
@@ -192,20 +196,37 @@ async def seed_user_groups(db_session: AsyncSession):
 
 
 @pytest_asyncio.fixture(scope="function")
-async def seed_database(db_session):
+async def seed_database(db_session: AsyncSession):
     """
-    Seed the database with test data if it is empty.
-
-    This fixture initializes a `CSVDatabaseSeeder` and ensures the test database is populated before
-    running tests that require existing data.
-
-    :param db_session: The async database session fixture.
-    :type db_session: AsyncSession
+    Sows the database with a fixed set of test data for movies.
+    Creates certifications, genres, stars, and movies.
     """
-    settings = get_settings()
-    seeder = CSVDatabaseSeeder(csv_file_path=settings.PATH_TO_MOVIES_CSV, db_session=db_session)
+    cert = CertificationModel(name="R")
+    db_session.add(cert)
+    await db_session.flush()
 
-    if not await seeder.is_db_populated():
-        await seeder.seed()
+    genre = GenreModel(name="Action")
+    star = StarModel(name="Test Actor")
+    director = DirectorModel(name="Test Director")
+    db_session.add_all([genre, star, director])
+    await db_session.flush()
 
+    for i in range(15):
+        movie = MovieModel(
+            name=f"Movie {i:02d}",
+            year=2020 + (i % 5),
+            time=100 + i,
+            imdb=7.0 + (i % 3) * 0.5,
+            meta_score=70 + i,
+            gross=1000000 * i,
+            description=f"Description for movie {i}",
+            price=10.0 + i,
+            certification_id=cert.id
+        )
+        movie.genres.append(genre)
+        movie.stars.append(star)
+        movie.directors.append(director)
+        db_session.add(movie)
+
+    await db_session.commit()
     yield db_session
