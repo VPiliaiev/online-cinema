@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from config import get_jwt_auth_manager
-from database.models.movies import MovieReactionModel, CommentMovieModel
+from database.models.movies import MovieReactionModel, CommentMovieModel, FavoriteMovieModel
 from exceptions import BaseSecurityError
 from security.http import get_token
 
@@ -21,7 +21,7 @@ from schemas import (
     MovieDetailSchema
 )
 from schemas.movies import MovieCreateSchema, MovieUpdateSchema, ReactionResponseSchema, ReactionCreateSchema, \
-    CommentResponseSchema, CommentCreateSchema, CommentTreeResponseSchema
+    CommentResponseSchema, CommentCreateSchema, CommentTreeResponseSchema, FavoriteResponseSchema
 from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
@@ -463,6 +463,75 @@ async def get_comments(movie_id: int, db: AsyncSession = Depends(get_db)):
         .where(CommentMovieModel.movie_id == movie_id)
         .where(CommentMovieModel.parent_id == None)
         .order_by(CommentMovieModel.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+@router.post(
+    "/movies/{movie_id}/favorite/",
+    response_model=FavoriteResponseSchema,
+    summary="Add or remove movie from favorites",
+)
+async def add_to_favorite_movie(
+        movie_id: int,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db)
+):
+    payload = jwt_manager.decode_access_token(token)
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(401, "Invalid token")
+    movie = await db.get(MovieModel, movie_id)
+    if not movie:
+        raise HTTPException(404, "Movie not found")
+    stmt = select(FavoriteMovieModel).where(
+        FavoriteMovieModel.user_id == user_id,
+        FavoriteMovieModel.movie_id == movie_id
+    )
+    result = await db.execute(stmt)
+    existing = result.scalars().first()
+    if existing:
+        await db.delete(existing)
+        is_favorite = False
+        message = "Removed from favorites"
+    else:
+        new_fav = FavoriteMovieModel(user_id=user_id, movie_id=movie_id)
+        db.add(new_fav)
+        is_favorite = True
+        message = "Added to favorites"
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(500, "Database error")
+    return FavoriteResponseSchema(
+        movie_id=movie_id,
+        is_favorite=is_favorite,
+        message=message
+    )
+
+
+@router.get(
+    "/favorites/",
+    response_model=List[MovieListItemSchema],
+    summary="Get my favorite movies"
+)
+async def get_my_favorite_movies(
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db)
+):
+    payload = jwt_manager.decode_access_token(token)
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(401, "Invalid token")
+    stmt = (
+        select(MovieModel)
+        .join(FavoriteMovieModel)
+        .where(FavoriteMovieModel.user_id == user_id)
+        .options(selectinload(MovieModel.genres))
     )
     result = await db.execute(stmt)
     return result.scalars().all()
