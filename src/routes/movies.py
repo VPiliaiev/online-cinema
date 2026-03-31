@@ -1,14 +1,13 @@
-from typing import Optional
+from typing import Optional, List
 
-from aiosmtplib import status
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, func, or_, Integer, cast
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from config import get_jwt_auth_manager
-from database.models.movies import MovieReactionModel
+from database.models.movies import MovieReactionModel, CommentMovieModel
 from exceptions import BaseSecurityError
 from security.http import get_token
 
@@ -21,7 +20,8 @@ from schemas import (
     MovieListItemSchema,
     MovieDetailSchema
 )
-from schemas.movies import MovieCreateSchema, MovieUpdateSchema, ReactionResponseSchema, ReactionCreateSchema
+from schemas.movies import MovieCreateSchema, MovieUpdateSchema, ReactionResponseSchema, ReactionCreateSchema, \
+    CommentResponseSchema, CommentCreateSchema, CommentTreeResponseSchema
 from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
@@ -402,3 +402,67 @@ async def react_to_movie(
         dislikes_count=stats.dislikes,
         user_reaction=user_reaction
     )
+
+
+@router.post(
+    "/movies/{movie_id}/comments/",
+    response_model=CommentResponseSchema,
+    status_code=201,
+    summary="Add a comment or reply",
+    description="Post a new comment. Use parent_id to reply to an existing comment.",
+    responses={401: {"description": "Unauthorized"}}
+)
+async def create_comment(
+        movie_id: int,
+        data: CommentCreateSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db)
+):
+    payload = jwt_manager.decode_access_token(token)
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(401, "Invalid token")
+    new_comment = CommentMovieModel(
+        content=data.content,
+        parent_id=data.parent_id,
+        movie_id=movie_id,
+        user_id=user_id
+    )
+    db.add(new_comment)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(500, "Database error")
+    stmt = (
+        select(CommentMovieModel)
+        .options(selectinload(CommentMovieModel.user))
+        .where(CommentMovieModel.id == new_comment.id)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one()
+
+
+@router.get(
+    "/movies/{movie_id}/comments/",
+    response_model=List[CommentTreeResponseSchema],
+    summary="Get movie comments",
+    description="Returns a tree of comments and their replies"
+)
+async def get_comments(movie_id: int, db: AsyncSession = Depends(get_db)):
+    stmt = (
+        select(CommentMovieModel)
+        .options(
+            selectinload(CommentMovieModel.user),
+            selectinload(CommentMovieModel.replies).options(
+                selectinload(CommentMovieModel.user),
+                selectinload(CommentMovieModel.replies).selectinload(CommentMovieModel.user)
+            )
+        )
+        .where(CommentMovieModel.movie_id == movie_id)
+        .where(CommentMovieModel.parent_id == None)
+        .order_by(CommentMovieModel.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
