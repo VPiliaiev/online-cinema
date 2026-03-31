@@ -513,3 +513,63 @@ async def test_get_comments_empty_movie(client, seed_database):
     response = await client.get("/api/v1/theater/movies/999/comments/")
     assert response.status_code == 200
     assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_favorite_movie_toggle_flow(client, db_session, seed_user_groups, seed_database):
+    """
+    Test add and remove a movie from favorites
+    """
+    email = "fav_test@example.com"
+    password = "Password123!"
+    movie_id = 1
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=password, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+    add_res = await client.post(f"/api/v1/theater/movies/{movie_id}/favorite/", headers=headers)
+    assert add_res.status_code == 200
+    assert add_res.json()["is_favorite"] is True
+    assert add_res.json()["movie_id"] == movie_id
+    list_res = await client.get("/api/v1/theater/favorites/", headers=headers)
+    assert list_res.status_code == 200
+    favorites = list_res.json()
+    assert len(favorites) == 1
+    assert favorites[0]["id"] == movie_id
+    remove_res = await client.post(f"/api/v1/theater/movies/{movie_id}/favorite/", headers=headers)
+    assert remove_res.status_code == 200
+    assert remove_res.json()["is_favorite"] is False
+    assert "removed" in remove_res.json()["message"].lower()
+    final_list_res = await client.get("/api/v1/theater/favorites/", headers=headers)
+    assert len(final_list_res.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_favorite_movie_not_found(client, db_session, seed_user_groups, seed_database):
+    """
+    Test adding a not existent movie to favorites
+    """
+    email = "fav_test@example.com"
+    password = "Password123!"
+    res_group = await db_session.execute(select(UserGroupModel).filter_by(name=UserGroupEnum.USER))
+    user = UserModel.create(email=email, raw_password=password, group_id=res_group.scalars().first().id)
+    user.is_active = True
+    db_session.add(user)
+    await db_session.commit()
+    login_res = await client.post("/api/v1/accounts/login/", json={"email": email, "password": password})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+    response = await client.post("/api/v1/theater/movies/9999/favorite/", headers=headers)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Movie not found"
+
+
+@pytest.mark.asyncio
+async def test_get_favorites_unauthorized(client):
+    """
+    Test that unauthorized users can not see favorites
+    """
+    response = await client.get("/api/v1/theater/favorites/")
+    assert response.status_code == 401
