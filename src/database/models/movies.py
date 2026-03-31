@@ -198,7 +198,7 @@ class CommentMovieModel(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc)
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
     )
 
     parent_id: Mapped[Optional[int]] = mapped_column(
