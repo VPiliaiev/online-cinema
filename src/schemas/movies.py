@@ -173,3 +173,14 @@ class FavoriteResponseSchema(BaseModel):
     movie_id: int
     is_favorite: bool
     message: str
+
+
+class RatingCreateSchema(BaseModel):
+    value: int = Field(..., ge=1, le=10, description="Rating value between 1 and 10")
+
+
+class RatingResponseSchema(BaseModel):
+    movie_id: int
+    user_id: int
+    value: int
+    message: str
