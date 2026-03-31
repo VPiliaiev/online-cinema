@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from config import get_jwt_auth_manager
-from database.models.movies import MovieReactionModel, CommentMovieModel, FavoriteMovieModel
+from database.models.movies import MovieReactionModel, CommentMovieModel, FavoriteMovieModel, RatingMovieModel
 from exceptions import BaseSecurityError
 from security.http import get_token
 
@@ -21,7 +21,8 @@ from schemas import (
     MovieDetailSchema
 )
 from schemas.movies import MovieCreateSchema, MovieUpdateSchema, ReactionResponseSchema, ReactionCreateSchema, \
-    CommentResponseSchema, CommentCreateSchema, CommentTreeResponseSchema, FavoriteResponseSchema
+    CommentResponseSchema, CommentCreateSchema, CommentTreeResponseSchema, FavoriteResponseSchema, RatingResponseSchema, \
+    RatingCreateSchema
 from security.interfaces import JWTAuthManagerInterface
 
 router = APIRouter()
@@ -535,3 +536,62 @@ async def get_my_favorite_movies(
     )
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+@router.post(
+    "/movies/{movie_id}/rate/",
+    response_model=RatingResponseSchema,
+    summary="Rate a movie",
+    description="Set a rating from 1 to 10",
+    responses={
+        200: {"description": "Rating updated"},
+        201: {"description": "Rating created"},
+        400: {"description": "Invalid rating value"},
+        404: {"description": "Movie not found"}
+    }
+)
+async def rate_movie(
+        movie_id: int,
+        data: RatingCreateSchema,
+        token: str = Depends(get_token),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        db: AsyncSession = Depends(get_db)
+):
+    try:
+        payload = jwt_manager.decode_access_token(token)
+        user_id = payload.get("user_id")
+    except BaseSecurityError:
+        raise HTTPException(401, "Invalid or expired token")
+    movie = await db.get(MovieModel, movie_id)
+    if not movie:
+        raise HTTPException(404, "Movie not found")
+    stmt = select(RatingMovieModel).where(
+        RatingMovieModel.user_id == user_id,
+        RatingMovieModel.movie_id == movie_id
+    )
+    result = await db.execute(stmt)
+    existing_rating = result.scalars().first()
+    if existing_rating:
+        existing_rating.value = data.value
+        message = "Rating updated"
+        status_code = 200
+    else:
+        new_rating = RatingMovieModel(
+            user_id=user_id,
+            movie_id=movie_id,
+            value=data.value
+        )
+        db.add(new_rating)
+        message = "Rating created"
+        status_code = 201
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(500, "Database error during rating update")
+    return RatingResponseSchema(
+        movie_id=movie_id,
+        user_id=user_id,
+        value=data.value,
+        message=message
+    )
