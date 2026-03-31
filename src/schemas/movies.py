@@ -133,3 +133,37 @@ class ReactionResponseSchema(BaseModel):
     likes_count: int
     dislikes_count: int
     user_reaction: Optional[bool] = None
+
+
+class CommentUserSchema(BaseModel):
+    id: int
+    email: str
+    model_config = {
+        "from_attributes": True,
+    }
+
+
+class CommentCreateSchema(BaseModel):
+    content: str
+    parent_id: Optional[int] = None
+
+
+class CommentResponseSchema(BaseModel):
+    id: int
+    user_id: int
+    movie_id: int
+    content: str
+    created_at: datetime
+    parent_id: Optional[int]
+    user: CommentUserSchema
+
+    model_config = {
+        "from_attributes": True,
+    }
+
+
+class CommentTreeResponseSchema(CommentResponseSchema):
+    replies: List["CommentTreeResponseSchema"] = Field(default_factory=list)
+
+
+CommentTreeResponseSchema.model_rebuild()
