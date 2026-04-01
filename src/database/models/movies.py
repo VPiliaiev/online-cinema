@@ -227,7 +227,3 @@ class MovieReactionModel(Base):
 
     user = relationship("UserModel")
     movie = relationship("MovieModel")
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "movie_id", name="unique_user_movie_reaction"),
-    )
