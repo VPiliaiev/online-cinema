@@ -24,10 +24,6 @@ if ! psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt" | g
         alembic -c $ALEMBIC_CONFIG revision --autogenerate -m "initial migration"
     fi
 
-    echo "Create migrations"
-    alembic -c $ALEMBIC_CONFIG revision --autogenerate -m "initial migration"
-
-
     echo "Applying all migrations..."
     alembic -c $ALEMBIC_CONFIG upgrade head
 
@@ -37,6 +33,12 @@ if ! psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt" | g
     echo "Database saver script completed."
 
     exit 0
+fi
+
+echo "Upgrading database to latest migration head..."
+if ! alembic -c $ALEMBIC_CONFIG upgrade head; then
+    echo "Error applying existing migrations. Exiting."
+    exit 1
 fi
 
 # Generate temporary migration
