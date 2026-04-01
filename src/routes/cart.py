@@ -18,7 +18,11 @@ router = APIRouter()
 @router.get(
     "/",
     response_model=Cart,
-    summary="Get current user cart"
+    summary="Get current user cart",
+    description="Retrieve shopping cart for the authenticated user. If no cart exists, a new one is created",
+    responses={
+        401: {"description": "Token expired or invalid"},
+    }
 )
 async def get_cart(
         token: str = Depends(get_token),
@@ -41,8 +45,6 @@ async def get_cart(
         cart = CartModel(user_id=user_id)
         db.add(cart)
         await db.commit()
-    # Re-fetch cart with eager-loaded items to avoid async lazy-load
-    # during response serialization (MissingGreenlet).
     result = await db.execute(stmt)
     return result.scalars().first()
 
@@ -50,7 +52,14 @@ async def get_cart(
 @router.post(
     "/items/",
     response_model=Cart,
-    summary="Add movie to cart"
+    summary="Add movie to cart",
+    description="Add a specific movie to the user cart. Checks if the movie exists and if it is already in the cart",
+    responses={
+        400: {"description": "Movie already in cart"},
+        404: {"description": "Movie not found"},
+        401: {"description": "Unauthorized"},
+        500: {"description": "Database error"}
+    }
 )
 async def add_item(
         data: CartItemCreate,
@@ -98,7 +107,12 @@ async def add_item(
 @router.delete(
     "/items/{item_id}/",
     response_model=Cart,
-    summary="Remove specific item from cart"
+    summary="Remove specific item from cart",
+    description="Remove a single item from the cart by unique item ID",
+    responses={
+        404: {"description": "Cart or Item not found"},
+        401: {"description": "Unauthorized"}
+    }
 )
 async def remove_item(
         item_id: int,
@@ -111,7 +125,6 @@ async def remove_item(
     cart_stmt = select(CartModel).where(CartModel.user_id == user_id)
     cart_res = await db.execute(cart_stmt)
     cart = cart_res.scalars().first()
-
     if not cart:
         raise HTTPException(404, "Cart not found")
     item_stmt = select(CartItemModel).where(
@@ -134,7 +147,11 @@ async def remove_item(
 @router.delete(
     "/",
     response_model=Cart,
-    summary="Clear entire cart"
+    summary="Clear entire cart",
+    description="Remove all movies from shopping cart.",
+    responses={
+        401: {"description": "Unauthorized"}
+    }
 )
 async def clear_cart(
         token: str = Depends(get_token),
