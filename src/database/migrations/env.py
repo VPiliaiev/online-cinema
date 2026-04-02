@@ -2,7 +2,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
-from database.models import movies, accounts, cart, order
+from database.models import movies, accounts, cart, order, payment
 from database.models.base import Base
 from database.session_postgresql import sync_postgresql_engine
 

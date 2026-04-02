@@ -25,6 +25,11 @@ from database.models.order import (
     OrderItemModel,
     OrderStatusEnum
 )
+from database.models.payment import (
+    PaymentModel,
+    PaymentItemModel,
+    PaymentStatusEnum,
+)
 from database.session_sqlite import reset_sqlite_database as reset_database
 from database.validators import accounts as accounts_validators
 
