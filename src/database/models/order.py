@@ -26,6 +26,7 @@ class OrderModel(Base):
 
     user = relationship("UserModel", back_populates="orders")
     items = relationship("OrderItemModel", back_populates="order", cascade="all, delete-orphan")
+    payments = relationship("PaymentModel", back_populates="order", cascade="all, delete-orphan")
 
 
 class OrderItemModel(Base):

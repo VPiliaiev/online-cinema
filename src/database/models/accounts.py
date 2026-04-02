@@ -91,6 +91,12 @@ class UserModel(Base):
         cascade="all, delete-orphan"
     )
 
+    payments: Mapped[List["PaymentModel"]] = relationship(
+        "PaymentModel",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
     cart: Mapped[Optional["CartModel"]] = relationship(
         "CartModel",
         back_populates="user",
