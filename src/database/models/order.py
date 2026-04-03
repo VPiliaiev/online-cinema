@@ -1,5 +1,6 @@
 from enum import Enum
-from sqlalchemy import Integer, ForeignKey, DateTime, Enum as SQLEnum, Float
+from decimal import Decimal
+from sqlalchemy import Integer, ForeignKey, DateTime, Enum as SQLEnum, Numeric
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -22,7 +23,7 @@ class OrderModel(Base):
         default=OrderStatusEnum.PENDING,
         nullable=False
     )
-    total_amount: Mapped[float] = mapped_column(Float, nullable=True)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
 
     user = relationship("UserModel", back_populates="orders")
     items = relationship("OrderItemModel", back_populates="order", cascade="all, delete-orphan")
@@ -35,7 +36,7 @@ class OrderItemModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     order_id: Mapped[int] = mapped_column(Integer, ForeignKey("orders.id"), nullable=False)
     movie_id: Mapped[int] = mapped_column(Integer, ForeignKey("movies.id"), nullable=False)
-    price_at_order: Mapped[float] = mapped_column(Float, nullable=False)
+    price_at_order: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
     order = relationship("OrderModel", back_populates="items")
     movie = relationship("MovieModel")

@@ -24,7 +24,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('order_id', sa.Integer(), nullable=False),
-    sa.Column('amount', sa.Float(), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.Column('external_payment_id', sa.String(), nullable=True),
     sa.Column('status', sa.Enum('PENDING', 'SUCCESSFUL', 'CANCELED', 'REFUNDED', name='paymentstatusenum'), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
@@ -37,7 +37,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('payment_id', sa.Integer(), nullable=False),
     sa.Column('order_item_id', sa.Integer(), nullable=False),
-    sa.Column('price_at_payment', sa.Float(), nullable=False),
+    sa.Column('price_at_payment', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.ForeignKeyConstraint(['order_item_id'], ['order_items.id'], ),
     sa.ForeignKeyConstraint(['payment_id'], ['payments.id'], ),
     sa.PrimaryKeyConstraint('id')

@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from enum import Enum
+from decimal import Decimal
 
 
 class PaymentStatusEnum(str, Enum):
@@ -13,7 +14,7 @@ class PaymentStatusEnum(str, Enum):
 
 class PaymentItemBase(BaseModel):
     order_item_id: int
-    price_at_payment: float
+    price_at_payment: Decimal
 
 
 class PaymentItem(PaymentItemBase):
@@ -27,13 +28,13 @@ class PaymentItem(PaymentItemBase):
 
 class PaymentBase(BaseModel):
     status: PaymentStatusEnum = PaymentStatusEnum.PENDING
-    amount: float
+    amount: Decimal
     external_payment_id: Optional[str] = None
 
 
 class PaymentCreate(BaseModel):
     order_id: int
-    amount: float
+    amount: Decimal
     external_payment_id: Optional[str] = None
 
 

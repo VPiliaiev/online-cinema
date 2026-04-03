@@ -2,6 +2,7 @@ from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 from datetime import datetime
 from enum import Enum
+from decimal import Decimal
 
 
 class OrderStatusEnum(str, Enum):
@@ -12,7 +13,7 @@ class OrderStatusEnum(str, Enum):
 
 class OrderItemBase(BaseModel):
     movie_id: int
-    price_at_order: float
+    price_at_order: Decimal
 
 
 class OrderItemCreate(OrderItemBase):
@@ -28,7 +29,7 @@ class OrderItem(OrderItemBase):
 
 class OrderBase(BaseModel):
     status: OrderStatusEnum = OrderStatusEnum.PENDING
-    total_amount: Optional[float] = None
+    total_amount: Optional[Decimal] = None
 
 
 class OrderCreate(BaseModel):
