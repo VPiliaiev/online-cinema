@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from decimal import Decimal, ROUND_HALF_UP
 from config import get_jwt_auth_manager, get_settings
 from database import get_db
 from database.models.order import OrderModel, OrderItemModel, OrderStatusEnum
@@ -71,8 +72,9 @@ async def create_checkout_session(
     items = order.items or []
     if not items:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Order has no items")
-    total_amount = float(order.total_amount) if order.total_amount is not None else float(
-        sum(item.price_at_order for item in items)
+    total_amount = order.total_amount if order.total_amount is not None else sum(
+        (item.price_at_order for item in items),
+        start=Decimal("0.00")
     )
     payment = PaymentModel(
         user_id=user_id,
@@ -88,7 +90,7 @@ async def create_checkout_session(
             PaymentItemModel(
                 payment_id=payment.id,
                 order_item_id=order_item.id,
-                price_at_payment=float(order_item.price_at_order),
+                price_at_payment=order_item.price_at_order,
             )
         )
     line_items = []
@@ -98,7 +100,9 @@ async def create_checkout_session(
             movie_name = getattr(order_item.movie, "name", None)
         if not movie_name:
             movie_name = f"Movie #{order_item.movie_id}"
-        unit_amount_cents = int(round(float(order_item.price_at_order) * 100))
+        unit_amount_cents = int(
+            (order_item.price_at_order * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
         line_items.append(
             {
                 "quantity": 1,

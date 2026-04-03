@@ -25,7 +25,7 @@ def upgrade() -> None:
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('status', sa.Enum('PENDING', 'PAID', 'CANCELED', name='orderstatusenum'), nullable=False),
-    sa.Column('total_amount', sa.Float(), nullable=True),
+    sa.Column('total_amount', sa.Numeric(precision=10, scale=2), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -34,7 +34,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('order_id', sa.Integer(), nullable=False),
     sa.Column('movie_id', sa.Integer(), nullable=False),
-    sa.Column('price_at_order', sa.Float(), nullable=False),
+    sa.Column('price_at_order', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.ForeignKeyConstraint(['movie_id'], ['movies.id'], ),
     sa.ForeignKeyConstraint(['order_id'], ['orders.id'], ),
     sa.PrimaryKeyConstraint('id')

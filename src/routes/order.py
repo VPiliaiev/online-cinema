@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from decimal import Decimal
 
 from config import get_jwt_auth_manager
 from database import get_db
@@ -46,7 +47,7 @@ async def create_order(
     cart = cart_res.scalars().first()
     if not cart or not cart.items:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cart is empty")
-    total_amount = sum(float(item.movie.price) for item in cart.items)
+    total_amount = sum((item.movie.price for item in cart.items), start=Decimal("0.00"))
     new_order = OrderModel(
         user_id=user_id,
         status=OrderStatusEnum.PENDING,
@@ -57,7 +58,7 @@ async def create_order(
         new_order.items.append(
             OrderItemModel(
                 movie_id=cart_item.movie_id,
-                price_at_order=float(cart_item.movie.price)
+                price_at_order=cart_item.movie.price
             )
         )
     cart.items.clear()
